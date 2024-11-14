@@ -1,0 +1,42 @@
+{
+	"language": "Solidity",
+	"settings": {
+		"optimizer": {
+			"enabled": true,
+			"runs": 200000,
+			"details": {
+				"peephole": true,
+				"inliner": true,
+				"jumpdestRemover": true,
+				"orderLiterals": true,
+				"deduplicate": true,
+				"cse": true,
+				"constantOptimizer": true,
+				"simpleCounterForLoopUncheckedIncrement": true,
+				"yul": true,
+				"yulDetails": {
+					"stackAllocation": true
+				}
+			}
+		},
+		"evmVersion": "cancun",
+		"viaIR": true,
+		"debug": {
+			"revertStrings": "strip",
+			"debugInfo": []
+		},
+		"metadata": {
+			"appendCBOR": false,
+			"useLiteralContent": true,
+			"bytecodeHash": "none"
+		},
+		"outputSelection": {
+			"*": {
+				"*": [
+					"evm.bytecode",
+					"abi"
+				]
+			}
+		}
+	}
+}
