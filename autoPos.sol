@@ -32,6 +32,10 @@ contract CFollowAutoPos {
         whitelist[a]=b;
     }
 
+    function checkDataa(address pool,int24 posSpacing,bool isToken0) external pure returns(bytes memory data){
+        return abi.encode(pool,posSpacing,isToken0);
+    }
+
     function checkUpkeep(bytes calldata checkData)external view returns (bool upkeepNeeded, bytes memory performData){
         (address pool,int24 posSpacing,bool isToken0)=abi.decode(checkData,(address,int24,bool));
         int24 tickLower=positions[uint160(pool)+uint24(posSpacing)];
@@ -54,10 +58,11 @@ contract CFollowAutoPos {
         performData=abi.encode(pool,posSpacing,newTickLower,isToken0,token);
     }
 
-    function performUpkeep(bytes calldata performData) external checkWhitelist{
+    function performUpkeep(bytes calldata performData) external payable checkWhitelist{
         (address pool,int24 posSpacing,int24 newTickLower,bool isToken0,address token)=abi.decode(performData,(address,int24,int24,bool,address));
-        int24 newTickUpper=newTickLower+posSpacing;
-        (uint amount0,uint amount1)=_burnPosition(address(this),pool,newTickLower,newTickUpper);
+        uint160 posKey=uint160(pool)+uint24(posSpacing);
+        int24 tickLower=positions[posKey];
+        (uint amount0,uint amount1)=_burnPosition(address(this),pool,tickLower,tickLower+posSpacing);
         uint amount;
         if(isToken0){
             amount=amount0;
@@ -66,7 +71,8 @@ contract CFollowAutoPos {
             amount=amount1;
             require(amount0==0);
         }
-        _mintPosition(pool,int24(newTickLower),newTickUpper,amount,isToken0,abi.encode(token));
+        _mintPosition(pool,newTickLower,newTickLower+posSpacing,amount,isToken0,abi.encode(token));
+        positions[posKey]=newTickLower;
     }
 
     function createNewPosition(address pool,int24 posSpacing,uint amount,bool isToken0)external payable checkOwner{
@@ -77,22 +83,22 @@ contract CFollowAutoPos {
             posTickLower=tickLowerBound(tick,spacing)+spacing;
             posTickUpper=posTickLower+posSpacing;
             require(posTickUpper<MAX_TICK);
-            token=IUniswapV3Pool(msg.sender).token0();
+            token=IUniswapV3Pool(pool).token0();
         }else{
             posTickUpper=tickLowerBound(tick,spacing);
             posTickLower=posTickUpper-posSpacing;
             require(posTickLower>MIN_TICK);
-            token=IUniswapV3Pool(msg.sender).token1();
+            token=IUniswapV3Pool(pool).token1();
         }
         IERC20(token).transferFrom(owner,address(this),amount);
         _mintPosition(pool,posTickLower,posTickUpper,amount,isToken0,abi.encode(token));
         positions[uint160(pool)+uint24(posSpacing)]=posTickLower;
     }
 
-    function deletePosition(address pool,uint spacing) external payable checkOwner{
-        uint160 posKey=uint160(pool)+uint160(spacing);
+    function deletePosition(address pool,int24 posSpacing) external payable checkOwner{
+        uint160 posKey=uint160(pool)+uint24(posSpacing);
         int24 posTickLower=positions[posKey];
-        _burnPosition(owner,pool,posTickLower,posTickLower+int24(int(spacing)));
+        _burnPosition(owner,pool,posTickLower,posTickLower+posSpacing);
         delete positions[posKey];
     }
 
