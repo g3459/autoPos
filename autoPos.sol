@@ -9,7 +9,7 @@ contract CFollowAutoPos {
 
     address internal immutable owner;
 
-    mapping(uint160=>int24) internal positions;
+    mapping(uint160=>uint24) internal positions;
 
     mapping(address => bool) public whitelist;
 
@@ -40,22 +40,22 @@ contract CFollowAutoPos {
     function checkUpkeep(bytes calldata checkData)external view returns (bool upkeepNeeded, bytes memory performData){
         (address pool,int24 posSpacing,bool isToken0)=abi.decode(checkData,(address,int24,bool));
         uint160 posKey=getPosKey(pool,posSpacing);
-        int24 tickLower=positions[posKey];
-        (uint128 liquidity,,,,)=IUniswapV3Pool(pool).positions(keccak256(abi.encodePacked(address(this), tickLower, tickLower+posSpacing)));
-        require(liquidity>0);
+        int24 tickLower=getPos(posKey);
         (,int24 tick , , , , , )=IUniswapV3Pool(pool).slot0();
         int24 spacing=IUniswapV3Pool(pool).tickSpacing();
         int24 newTickLower;address token;
         if(isToken0){
             newTickLower=tickLowerBound(tick,spacing)+spacing;
-            require(newTickLower+posSpacing<MAX_TICK);
-            require(newTickLower<tickLower);
-            token=IUniswapV3Pool(msg.sender).token0();
+            int24 newTickUpper=newTickLower+posSpacing;
+            require(newTickUpper<MAX_TICK,"TU");
+            require(newTickLower<tickLower,"NU");
+            token=IUniswapV3Pool(pool).token0();
         }else{
-            newTickLower=tickLowerBound(tick,spacing)-posSpacing;
-            require(newTickLower>MIN_TICK);
-            require(newTickLower>tickLower);
-            token=IUniswapV3Pool(msg.sender).token1();
+            int24 newTickUpper=tickLowerBound(tick,spacing);
+            newTickLower=newTickUpper-posSpacing;
+            require(newTickLower>MIN_TICK,"TL");
+            require(newTickLower>tickLower,"NU");
+            token=IUniswapV3Pool(pool).token1();
         }
         upkeepNeeded=true;
         performData=abi.encode(pool,posSpacing,newTickLower,isToken0,token);
@@ -63,50 +63,51 @@ contract CFollowAutoPos {
 
     function performUpkeep(bytes calldata performData) external payable checkWhitelist{
         (address pool,int24 posSpacing,int24 newTickLower,bool isToken0,address token)=abi.decode(performData,(address,int24,int24,bool,address));
+        int24 newTickUpper=newTickLower+posSpacing;
         uint160 posKey=getPosKey(pool,posSpacing);
-        int24 tickLower=positions[posKey];
+        int24 tickLower=getPos(posKey);
         (uint amount0,uint amount1)=_burnPosition(address(this),pool,tickLower,tickLower+posSpacing);
-        uint amount;
+        uint128 liquidity;
         if(isToken0){
-            amount=amount0;
-            require(amount1==0);
+            require(amount1==0,"A1");
+            liquidity=getLiquidityForAmount0(tickSqrtP(newTickLower), tickSqrtP(newTickUpper), amount0);
         }else{
-            amount=amount1;
-            require(amount0==0);
+            require(amount0==0,"A0");
+            liquidity=getLiquidityForAmount1(tickSqrtP(newTickLower), tickSqrtP(newTickUpper), amount1);
         }
-        _mintPosition(pool,newTickLower,newTickLower+posSpacing,amount,isToken0,abi.encode(token));
-        positions[posKey]=newTickLower;
+        (uint _amount0,uint _amount1)=_mintPosition(pool,newTickLower,newTickUpper,liquidity,abi.encode(token));
+        require(amount0==_amount0 && amount1==_amount1);
+        setPos(posKey,newTickLower);
     }
 
     function createNewPosition(address pool,int24 posSpacing,uint amount,bool isToken0)external payable checkOwner{
         uint160 posKey=getPosKey(pool,posSpacing);
-        {
-            int24 tickLower=positions[posKey];
-            (uint128 liquidity,,,,)=IUniswapV3Pool(pool).positions(keccak256(abi.encodePacked(address(this), tickLower, tickLower+posSpacing)));
-            require(liquidity==0);
-        }
+        require(positions[posKey]==0,"AP");
         (, int24 tick, , , , , )=IUniswapV3Pool(pool).slot0();
         int24 spacing=IUniswapV3Pool(pool).tickSpacing();
-        int24 posTickLower;int24 posTickUpper;address token;
+        address token;int24 posTickLower;int24 posTickUpper;uint128 liquidity;
         if(isToken0){
             posTickLower=tickLowerBound(tick,spacing)+spacing;
             posTickUpper=posTickLower+posSpacing;
-            require(posTickUpper<MAX_TICK);
+            require(posTickUpper<MAX_TICK,"TU");
             token=IUniswapV3Pool(pool).token0();
+            liquidity=getLiquidityForAmount0(tickSqrtP(posTickLower), tickSqrtP(posTickUpper), amount);
         }else{
             posTickUpper=tickLowerBound(tick,spacing);
             posTickLower=posTickUpper-posSpacing;
-            require(posTickLower>MIN_TICK);
+            require(posTickLower>MIN_TICK,"TL");
             token=IUniswapV3Pool(pool).token1();
+            liquidity=getLiquidityForAmount1(tickSqrtP(posTickLower), tickSqrtP(posTickUpper), amount);
         }
         IERC20(token).transferFrom(owner,address(this),amount);
-        _mintPosition(pool,posTickLower,posTickUpper,amount,isToken0,abi.encode(token));
-        positions[posKey]=posTickLower;
+        (uint amount0,uint amount1)=_mintPosition(pool,posTickLower,posTickUpper,liquidity,abi.encode(token));
+        require(isToken0?amount0==amount:amount1==amount,"MA");
+        setPos(posKey,posTickLower);
     }
 
     function deletePosition(address pool,int24 posSpacing) external payable checkOwner{
         uint160 posKey=getPosKey(pool,posSpacing);
-        int24 posTickLower=positions[posKey];
+        int24 posTickLower=getPos(posKey);
         _burnPosition(owner,pool,posTickLower,posTickLower+posSpacing);
         delete positions[posKey];
     }
@@ -115,16 +116,8 @@ contract CFollowAutoPos {
         unchecked{(s,)=target.call(call);}
     }
 
-    function _mintPosition(address pool,int24 tickLower,int24 tickUpper,uint amount,bool isToken0,bytes memory data)internal {
-        uint _amount;
-        if(isToken0){
-            uint128 liquidity = getLiquidityForAmount0(getSqrtPriceAtTick(tickLower), getSqrtPriceAtTick(tickUpper), amount);
-            (_amount,)=IUniswapV3Pool(pool).mint(address(this),tickLower,tickUpper,liquidity,data);
-        }else{
-            uint128 liquidity = getLiquidityForAmount1(getSqrtPriceAtTick(tickLower), getSqrtPriceAtTick(tickUpper), amount);
-            (,_amount)=IUniswapV3Pool(pool).mint(address(this),tickLower,tickUpper,liquidity,data);
-        }
-        require(_amount==amount);
+    function _mintPosition(address pool,int24 tickLower,int24 tickUpper,uint128 liquidity,bytes memory data)internal returns (uint amount0,uint amount1){
+        (amount0,amount1)=IUniswapV3Pool(pool).mint(address(this),tickLower,tickUpper,liquidity,data);
     }
 
     function _burnPosition(address recipient,address pool,int24 tickLower,int24 tickUpper)internal returns (uint amount0,uint amount1){
@@ -151,7 +144,7 @@ contract CFollowAutoPos {
         return uint128((amount1 << 96) / (sqrtPUX96 - sqrtPLX96));
     }
 
-    function getSqrtPriceAtTick(int24 tick) internal pure returns (uint160 sqrtPX96) {
+    function tickSqrtP(int24 tick) internal pure returns (uint160 sqrtPX96) {
         unchecked {
             uint256 absTick;
             assembly {
@@ -197,4 +190,13 @@ contract CFollowAutoPos {
         return uint160(pool)^uint24(posSpacing);
     }
 
+    function getPos(uint160 posKey)internal view returns(int24){
+        uint24 temp = positions[posKey];
+        require(temp!=0,"NP");
+        return int24(temp&0x7fffff);
+    }
+
+    function setPos(uint160 posKey,int24 tick)internal{
+        positions[posKey]=uint24(tick)|0x800000;
+    }
 }
