@@ -69,14 +69,16 @@ contract CFollowAutoPos {
         (uint amount0,uint amount1)=_burnPosition(address(this),pool,tickLower,tickLower+posSpacing);
         uint128 liquidity;
         if(isToken0){
-            require(amount1==0,"A1");
             liquidity=getLiquidityForAmount0(tickSqrtP(newTickLower), tickSqrtP(newTickUpper), amount0);
         }else{
-            require(amount0==0,"A0");
             liquidity=getLiquidityForAmount1(tickSqrtP(newTickLower), tickSqrtP(newTickUpper), amount1);
         }
         (uint _amount0,uint _amount1)=_mintPosition(pool,newTickLower,newTickUpper,liquidity,abi.encode(token));
-        require(amount0==_amount0 && amount1==_amount1);
+        if(isToken0){
+            require(amount0==_amount0 && _amount1==0,"A1");
+        }else{
+            require(amount1==_amount1 && _amount0==0,"A0");
+        }
         setPos(posKey,newTickLower);
     }
 
